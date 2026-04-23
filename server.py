@@ -25,7 +25,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlparse(self.path)
-        if parsed.path == "/":
+        if parsed.path in ("/", "/dashboard.html"):
             self._set_headers("text/html")
             with open("dashboard.html", "rb") as f:
                 self.wfile.write(f.read())
