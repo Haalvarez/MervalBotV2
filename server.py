@@ -1,5 +1,6 @@
 import os
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 from urllib.parse import urlparse, parse_qs
@@ -10,12 +11,79 @@ from trades import get_open_trades, get_stats
 from datetime import datetime
 from main import main_loop
 
+try:
+    from broker import IOLBroker
+except ImportError:
+    IOLBroker = None
+
+try:
+    from telegram import send_signal
+except ImportError:
+    def send_signal(*args, **kwargs):
+        return None
+
 STRATEGIES = [
     ADRSpreadStrategy(),
     CIT2ArbStrategy(),
 ]
 
 PORT = int(os.getenv("PORT", 8765))
+MAX_ACTIONS = 20
+ALERT_COOLDOWN_SECONDS = int(os.getenv("ALERT_COOLDOWN_SECONDS", "300"))
+RECENT_ACTIONS = []
+_LAST_ALERT_TS = {}
+
+def log_action(message):
+    RECENT_ACTIONS.append({
+        "ts": datetime.utcnow().isoformat(),
+        "message": str(message),
+    })
+    if len(RECENT_ACTIONS) > MAX_ACTIONS:
+        RECENT_ACTIONS.pop(0)
+
+def send_critical_alert(reason):
+    now = time.time()
+    last_ts = _LAST_ALERT_TS.get(reason, 0)
+    if now - last_ts < ALERT_COOLDOWN_SECONDS:
+        return
+    _LAST_ALERT_TS[reason] = now
+    log_action(f"CRITICAL: {reason}")
+    try:
+        send_signal({
+            "strategy_id": "system",
+            "symbol": "-",
+            "action": "ALERT",
+            "entry_price": 0,
+            "sl_price": 0,
+            "tp_price": 0,
+            "reason": reason,
+            "confidence": 0,
+        }, 0, None)
+    except Exception as exc:
+        log_action(f"Error enviando alerta Telegram: {exc}")
+
+def get_real_balance():
+    if IOLBroker is None:
+        send_critical_alert("Broker no disponible para consultar saldo")
+        return {"ars": 0, "usd": 0}
+    try:
+        broker = IOLBroker()
+        raw_balance = broker.get_balance() or {}
+        ars = float(raw_balance.get("ars", 0) or 0)
+        usd = float(raw_balance.get("usd", 0) or 0)
+        if ars == 0 and usd == 0:
+            send_critical_alert("Saldo en cero detectado")
+        return {"ars": ars, "usd": usd}
+    except Exception as exc:
+        send_critical_alert(f"Error crítico consultando saldo: {exc}")
+        return {"ars": 0, "usd": 0}
+
+def get_activity_status(balance):
+    if balance.get("ars", 0) > 0 or balance.get("usd", 0) > 0:
+        return "active"
+    if RECENT_ACTIONS and "CRITICAL" in RECENT_ACTIONS[-1]["message"]:
+        return "critical"
+    return "no_funds"
 
 class Handler(BaseHTTPRequestHandler):
     def _set_headers(self, content_type="application/json"):
@@ -31,10 +99,13 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(f.read())
         elif parsed.path == "/api/state":
             self._set_headers()
+            balance = get_real_balance()
             state = {
                 "strategies": [],
-                "balance": {"ars": 1_000_000, "usd": 0},
-                "last_update": datetime.utcnow().isoformat()
+                "balance": balance,
+                "last_update": datetime.utcnow().isoformat(),
+                "status": get_activity_status(balance),
+                "recent_actions": RECENT_ACTIONS[-MAX_ACTIONS:],
             }
             for strat in STRATEGIES:
                 stats = strat.report()

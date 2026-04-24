@@ -50,7 +50,8 @@
             <span id="mode" style="margin-left:2em;">Modo: -</span>
         </div>
         <div>
-            Última actualización: <span id="last_update">-</span>
+            Estado: <span id="status">-</span>
+            &nbsp;|&nbsp; Última actualización: <span id="last_update">-</span>
         </div>
     </header>
     <main id="main"></main>
@@ -62,6 +63,10 @@
             </thead>
             <tbody></tbody>
         </table>
+    </section>
+    <section class="recent-actions">
+        <h2>Acciones y Decisiones Recientes</h2>
+        <ul id="recent_actions"></ul>
     </section>
     <script>
     async function fetchState() {
@@ -76,6 +81,7 @@
         fetchState().then(state => {
             document.getElementById('balance').textContent = `ARS: ${state.balance.ars} USD: ${state.balance.usd}`;
             document.getElementById('last_update').textContent = state.last_update;
+            document.getElementById('status').textContent = state.status;
             let mode = (state.strategies[0]?.mode || 'PAPER').toUpperCase();
             document.getElementById('mode').textContent = `Modo: ${mode}`;
             let main = document.getElementById('main');
@@ -90,6 +96,10 @@
                     <tbody>${s.last_signal ? `<tr><td>${s.last_signal.symbol}</td><td>${s.last_signal.action}</td><td>${s.last_signal.entry_price}</td><td>${s.last_signal.sl_price}</td><td>${s.last_signal.tp_price}</td><td>${(s.last_signal.confidence*100).toFixed(1)}%</td></tr>` : '<tr><td colspan="6">-</td></tr>'}</tbody></table>`;
                 main.appendChild(card);
             });
+            // Acciones y decisiones recientes
+            let actions = state.recent_actions || [];
+            let ul = document.getElementById('recent_actions');
+            ul.innerHTML = actions.length ? actions.map(a => `<li>${a}</li>`).join('') : '<li>-</li>';
         });
         fetchOpenTrades().then(trades => {
             let tbody = document.querySelector('#open_trades_table tbody');
