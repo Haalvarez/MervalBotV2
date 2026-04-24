@@ -1,135 +1,129 @@
+"""
+Server HTTP del monitor. Sirve dashboard.html + API de lectura de la DB.
+Arranca el collector en un daemon thread.
+"""
 import os
 import threading
-import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 from urllib.parse import urlparse, parse_qs
-from strategy import Strategy
-from strategies.adr_spread import ADRSpreadStrategy
-from strategies.ci_t2_arb import CIT2ArbStrategy
-from trades import get_open_trades, get_stats
-from datetime import datetime
+from datetime import datetime, timedelta
+
 from activity_log import log_action, RECENT_ACTIONS
-from main import main_loop
-try:
-    from main import BROKER
-except ImportError:
-    BROKER = None
-
-try:
-    from telegram import send_signal
-except ImportError:
-    def send_signal(*args, **kwargs):
-        return None
-
-STRATEGIES = [
-    ADRSpreadStrategy(),
-    CIT2ArbStrategy(),
-]
+from main import main_loop, build_broker
+import db
 
 PORT = int(os.getenv("PORT", 8765))
 MAX_ACTIONS = 200
-ALERT_COOLDOWN_SECONDS = int(os.getenv("ALERT_COOLDOWN_SECONDS", "300"))
-_LAST_ALERT_TS = {}
 
-def send_critical_alert(reason):
-    now = time.time()
-    last_ts = _LAST_ALERT_TS.get(reason, 0)
-    if now - last_ts < ALERT_COOLDOWN_SECONDS:
-        return
-    _LAST_ALERT_TS[reason] = now
-    log_action(f"CRITICAL: {reason}")
+
+def _broker_balance_safe():
+    """Intenta leer saldo IOL. No crítico si falla — el monitor sigue sin eso."""
     try:
-        send_signal({
-            "strategy_id": "system",
-            "symbol": "-",
-            "action": "ALERT",
-            "entry_price": 0,
-            "sl_price": 0,
-            "tp_price": 0,
-            "reason": reason,
-            "confidence": 0,
-        }, 0, None)
-    except Exception as exc:
-        log_action(f"Error enviando alerta Telegram: {exc}")
+        broker = build_broker()
+        if broker is None:
+            return None
+        raw = broker.get_balance() or {}
+        return {
+            "ars": float(raw.get("ars", 0) or 0),
+            "usd": float(raw.get("usd", 0) or 0),
+        }
+    except Exception as e:
+        log_action(f"server: balance fetch falló: {e}")
+        return None
 
-def get_real_balance():
-    if BROKER is None:
-        send_critical_alert("Broker no disponible para consultar saldo")
-        return {"ars": 0, "usd": 0}
-    try:
-        raw_balance = BROKER.get_balance() or {}
-        ars = float(raw_balance.get("ars", 0) or 0)
-        usd = float(raw_balance.get("usd", 0) or 0)
-        return {"ars": ars, "usd": usd}
-    except Exception as exc:
-        send_critical_alert(f"Error crítico consultando saldo: {exc}")
-        return {"ars": 0, "usd": 0}
-
-def get_activity_status(balance):
-    if balance.get("ars", 0) > 0 or balance.get("usd", 0) > 0:
-        return "active"
-    if RECENT_ACTIONS and "CRITICAL" in RECENT_ACTIONS[-1]["message"]:
-        return "critical"
-    return "no_funds"
 
 class Handler(BaseHTTPRequestHandler):
-    def _set_headers(self, content_type="application/json"):
-        self.send_response(200)
-        self.send_header('Content-type', content_type)
+    def _json(self, payload, status=200):
+        body = json.dumps(payload, default=str).encode()
+        self.send_response(status)
+        self.send_header("Content-type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
+        self.wfile.write(body)
+
+    def _html(self, path):
+        try:
+            with open(path, "rb") as f:
+                body = f.read()
+        except FileNotFoundError:
+            self.send_response(404); self.end_headers(); return
+        self.send_response(200)
+        self.send_header("Content-type", "text/html")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, fmt, *args):
+        return  # silenciar access logs
 
     def do_GET(self):
         parsed = urlparse(self.path)
-        if parsed.path in ("/", "/dashboard.html"):
-            self._set_headers("text/html")
-            with open("dashboard.html", "rb") as f:
-                self.wfile.write(f.read())
-        elif parsed.path == "/api/state":
-            self._set_headers()
-            balance = get_real_balance()
-            state = {
-                "strategies": [],
-                "balance": balance,
+        path = parsed.path
+
+        if path in ("/", "/dashboard.html"):
+            return self._html("dashboard.html")
+
+        if path == "/api/snapshot":
+            snapshot = db.get_latest_snapshot()
+            macro = db.get_latest_macro()
+            return self._json({
                 "server_time": datetime.utcnow().isoformat(),
-                "last_action_ts": RECENT_ACTIONS[-1]["ts"] if RECENT_ACTIONS else None,
-                "status": get_activity_status(balance),
-                "recent_actions": RECENT_ACTIONS[-MAX_ACTIONS:],
-            }
-            for strat in STRATEGIES:
-                stats = strat.report()
-                open_trades = get_open_trades(strat.id)
-                last_signal = None  # Could be loaded from signals table
-                state["strategies"].append({
-                    **stats,
-                    "open_trades": len(open_trades),
-                    "last_signal": last_signal
-                })
-            self.wfile.write(json.dumps(state).encode())
-        elif parsed.path == "/api/trades":
-            self._set_headers()
+                "snapshot": snapshot,
+                "macro": macro,
+            })
+
+        if path == "/api/history":
             qs = parse_qs(parsed.query)
-            strategy = qs.get("strategy", [None])[0]
-            limit = int(qs.get("limit", [50])[0])
-            # Simple: get last N trades for strategy
-            import sqlite3
-            from trades import DB_PATH
-            conn = sqlite3.connect(DB_PATH)
-            conn.row_factory = sqlite3.Row
-            c = conn.cursor()
-            if strategy:
-                c.execute("SELECT * FROM trades WHERE strategy_id=? ORDER BY id DESC LIMIT ?", (strategy, limit))
-            else:
-                c.execute("SELECT * FROM trades ORDER BY id DESC LIMIT ?", (limit,))
-            rows = [dict(row) for row in c.fetchall()]
-            conn.close()
-            self.wfile.write(json.dumps(rows).encode())
-        else:
-            self.send_response(404)
-            self.end_headers()
+            symbol = (qs.get("symbol", [""])[0] or "").upper()
+            hours = int(qs.get("hours", ["4"])[0])
+            if not symbol:
+                return self._json({"error": "symbol requerido"}, 400)
+            since = (datetime.utcnow() - timedelta(hours=hours)).isoformat()
+            ticks = db.get_ticks_since(symbol, since)
+            return self._json({"symbol": symbol, "hours": hours, "ticks": ticks})
+
+        if path == "/api/alerts":
+            qs = parse_qs(parsed.query)
+            limit = int(qs.get("limit", ["20"])[0])
+            return self._json({"alerts": db.get_recent_alerts(limit)})
+
+        if path == "/api/errors":
+            qs = parse_qs(parsed.query)
+            limit = int(qs.get("limit", ["20"])[0])
+            return self._json({"errors": db.get_recent_errors(limit)})
+
+        if path == "/api/health":
+            stats = db.get_db_stats()
+            balance = _broker_balance_safe()
+            last_tick_ts = stats.get("ticks_newest")
+            # Semáforo: verde si hay tick en últimos 5 min, amarillo <30 min, rojo sino
+            status = "unknown"
+            if last_tick_ts:
+                try:
+                    last_dt = datetime.fromisoformat(last_tick_ts)
+                    age = (datetime.utcnow() - last_dt).total_seconds()
+                    if age < 300: status = "green"
+                    elif age < 1800: status = "yellow"
+                    else: status = "red"
+                except Exception:
+                    pass
+            return self._json({
+                "status": status,
+                "server_time": datetime.utcnow().isoformat(),
+                "last_tick_ts": last_tick_ts,
+                "db_stats": stats,
+                "broker_ok": balance is not None,
+                "balance": balance,
+                "recent_actions": RECENT_ACTIONS[-MAX_ACTIONS:],
+            })
+
+        self.send_response(404); self.end_headers()
+
 
 if __name__ == "__main__":
-    t = threading.Thread(target=main_loop, daemon=True)
+    db.init_monitor_db()
+    t = threading.Thread(target=main_loop, daemon=True, name="collector")
     t.start()
     server = HTTPServer(("0.0.0.0", PORT), Handler)
     print(f"Server running on port {PORT}")

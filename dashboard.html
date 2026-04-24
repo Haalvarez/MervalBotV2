@@ -1,139 +1,221 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-    <meta charset="UTF-8">
-    <title>MervalBot Dashboard</title>
-    <style>
-        body {
-            background: #080b14;
-            color: #e0e6f0;
-            font-family: Arial, sans-serif;
-            margin: 0;
-            padding: 0;
-        }
-        header {
-            background: #10162a;
-            padding: 1em;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        .card {
-            background: #131a2a;
-            margin: 1em;
-            padding: 1em;
-            border-radius: 8px;
-            box-shadow: 0 2px 8px #0004;
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 1em;
-        }
-        th, td {
-            padding: 0.5em;
-            border-bottom: 1px solid #222b44;
-            text-align: left;
-        }
-        th {
-            background: #181f33;
-        }
-        .open-trades {
-            margin: 1em;
-        }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>mervalBotV2 — Monitor</title>
+<style>
+  :root {
+    --bg: #080b14;
+    --panel: #11151f;
+    --panel-hi: #1a1f2e;
+    --border: #222a3a;
+    --text: #d8dee9;
+    --text-dim: #7a8497;
+    --green: #22c55e;
+    --red: #ef4444;
+    --yellow: #eab308;
+    --accent: #60a5fa;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+    font-size: 13px;
+  }
+  header {
+    display: flex; gap: 24px; align-items: center;
+    padding: 12px 20px; background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+  header h1 { margin: 0; font-size: 16px; font-weight: 600; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px; border-radius: 4px; background: var(--panel-hi);
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .dot.green { background: var(--green); }
+  .dot.yellow { background: var(--yellow); }
+  .dot.red { background: var(--red); }
+  .dot.unknown { background: var(--text-dim); }
+  .macro-item { color: var(--text-dim); }
+  .macro-item b { color: var(--text); }
+  main { padding: 20px; display: grid; gap: 20px;
+         grid-template-columns: 2fr 1fr; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  .panel {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 6px; padding: 14px;
+  }
+  .panel h2 {
+    margin: 0 0 12px 0; font-size: 13px; font-weight: 600;
+    color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { padding: 6px 8px; text-align: right; border-bottom: 1px solid var(--border); }
+  th { color: var(--text-dim); font-weight: normal; text-align: right; }
+  th:first-child, td:first-child { text-align: left; }
+  tr:hover { background: var(--panel-hi); }
+  .pos { color: var(--green); }
+  .neg { color: var(--red); }
+  .dim { color: var(--text-dim); }
+  .alert-item, .action-item {
+    padding: 6px 0; border-bottom: 1px solid var(--border);
+    font-size: 12px; color: var(--text-dim);
+  }
+  .alert-item b { color: var(--text); }
+  .action-item.err { color: var(--red); }
+  footer {
+    padding: 10px 20px; color: var(--text-dim); font-size: 11px;
+    border-top: 1px solid var(--border);
+  }
+</style>
 </head>
 <body>
-    <header>
-        <div>
-            <span id="balance">ARS: - USD: -</span>
-            <span id="mode" style="margin-left:2em;">Modo: -</span>
-        </div>
-        <div>
-            Estado: <span id="status">-</span>
-            &nbsp;|&nbsp; Última actualización: <span id="last_update">-</span>
-        </div>
-    </header>
-    <main id="main"></main>
-    <section class="open-trades">
-        <h2>Posiciones Abiertas</h2>
-        <table id="open_trades_table">
-            <thead>
-                <tr><th>Strategy</th><th>Symbol</th><th>Entry</th><th>SL</th><th>TP</th><th>Qty</th><th>Status</th></tr>
-            </thead>
-            <tbody></tbody>
-        </table>
-    </section>
-    <section class="recent-actions">
-        <h2>Acciones y Decisiones Recientes</h2>
-        <ul id="recent_actions"></ul>
-    </section>
-    <section class="activity" id="activity">
-      <h2>Activity Log</h2>
-      <div id="activity-list"></div>
-    </section>
-    <script>
-    async function fetchState() {
-        const res = await fetch('/api/state');
-        return await res.json();
-    }
-    async function fetchOpenTrades() {
-        const res = await fetch('/api/trades?limit=100');
-        return await res.json();
-    }
-    function render() {
-        fetchState().then(state => {
-            document.getElementById('balance').textContent = `ARS: ${state.balance.ars} USD: ${state.balance.usd}`;
-            document.getElementById('last_update').textContent = state.server_time;
-            document.getElementById('status').textContent = state.status;
-            let mode = (state.strategies[0]?.mode || 'PAPER').toUpperCase();
-            document.getElementById('mode').textContent = `Modo: ${mode}`;
-            let main = document.getElementById('main');
-            main.innerHTML = '';
-            state.strategies.forEach(s => {
-                let card = document.createElement('div');
-                card.className = 'card';
-                if (s.mode === 'disabled') card.style.opacity = 0.4;
-                let badge = s.mode === 'disabled' ? '<span style="background:#b44;color:#fff;padding:2px 6px;border-radius:4px;font-size:0.7em;margin-left:8px;">DISABLED</span>' : '';
-                card.innerHTML = `<h2>${s.name} [${s.mode.toUpperCase()}]${badge}</h2>
-                    <div>Win rate: ${(s.win_rate*100).toFixed(1)}% | PnL: ${s.pnl_ars.toFixed(2)} ARS | Trades: ${s.n_trades}</div>
-                    <div>Posiciones abiertas: ${s.open_trades}</div>
-                    ${s.note ? `<div style='color:#b44;font-size:0.9em;'>${s.note}</div>` : ''}
-                    <table><thead><tr><th>Última señal</th><th>Acción</th><th>Precio</th><th>SL</th><th>TP</th><th>Confianza</th></tr></thead>
-                    <tbody>${s.last_signal ? `<tr><td>${s.last_signal.symbol}</td><td>${s.last_signal.action}</td><td>${s.last_signal.entry_price}</td><td>${s.last_signal.sl_price}</td><td>${s.last_signal.tp_price}</td><td>${(s.last_signal.confidence*100).toFixed(1)}%</td></tr>` : '<tr><td colspan="6">-</td></tr>'}</tbody></table>`;
-                main.appendChild(card);
-            });
-            // Acciones y decisiones recientes
-            let actions = state.recent_actions || [];
-            let ul = document.getElementById('recent_actions');
-            if (ul) ul.innerHTML = actions.length ? actions.map(a => `<li>${a.message}</li>`).join('') : '<li>-</li>';
-            // Activity log
-            const list = document.getElementById('activity-list');
-            list.innerHTML = (state.recent_actions || []).slice().reverse().map(a =>
-                `<div class="activity-item"><span class="activity-ts">${a.ts.slice(11,19)}</span>${a.message}</div>`
-            ).join('');
-        });
-        fetchOpenTrades().then(trades => {
-            let tbody = document.querySelector('#open_trades_table tbody');
-            tbody.innerHTML = '';
-            trades.filter(t => t.status === 'OPEN').forEach(t => {
-                let tr = document.createElement('tr');
-                tr.innerHTML = `<td>${t.strategy_id}</td><td>${t.symbol}</td><td>${t.entry_price}</td><td>${t.sl_price}</td><td>${t.tp_price}</td><td>${t.quantity}</td><td>${t.status}</td>`;
-                tbody.appendChild(tr);
-            });
-        });
-    }
-    render();
-    setInterval(render, 30000);
-    </script>
-    <style>
-    .activity { margin-top: 2rem; padding: 1rem; background: #0f1320;
-      border-radius: 8px; max-height: 400px; overflow-y: auto; }
-    .activity h2 { font-size: 0.9rem; color: #8892a6; margin: 0 0 0.5rem; }
-    #activity-list { font-family: monospace; font-size: 0.75rem;
-      color: #c5cde0; }
-    .activity-item { padding: 2px 0; border-bottom: 1px solid #1a2033; }
-    .activity-ts { color: #5a6378; margin-right: 8px; }
-    </style>
+
+<header>
+  <h1>📡 mervalBotV2 <span class="dim">monitor</span></h1>
+  <div class="badge"><span id="statusDot" class="dot unknown"></span><span id="statusText">…</span></div>
+  <div class="macro-item">MEP AL30: <b id="mepAl30">—</b></div>
+  <div class="macro-item">MEP GD30: <b id="mepGd30">—</b></div>
+  <div class="macro-item">CCL: <b id="ccl">—</b></div>
+  <div class="macro-item">Caución 1d: <b id="c1d">—</b></div>
+  <div class="macro-item">Caución 7d: <b id="c7d">—</b></div>
+  <div class="macro-item" style="margin-left:auto">Actualizado: <b id="lastUpdate">—</b></div>
+</header>
+
+<main>
+  <div class="panel">
+    <h2>Watchlist</h2>
+    <table>
+      <thead><tr>
+        <th>Symbol</th><th>Source</th><th>Last</th><th>Bid</th><th>Ask</th>
+        <th>Spread%</th><th>Volumen</th><th>Tick age</th>
+      </tr></thead>
+      <tbody id="watchlist"><tr><td colspan="8" class="dim">Cargando…</td></tr></tbody>
+    </table>
+  </div>
+
+  <div>
+    <div class="panel" style="margin-bottom:20px">
+      <h2>Alertas recientes</h2>
+      <div id="alerts"><div class="dim">Sin alertas</div></div>
+    </div>
+    <div class="panel">
+      <h2>Actividad</h2>
+      <div id="actions"><div class="dim">Sin actividad</div></div>
+    </div>
+  </div>
+</main>
+
+<footer>
+  <span id="dbStats">—</span> &middot;
+  <span id="errorCount">—</span> errores de collector
+</footer>
+
+<script>
+function fmt(n, d=2) {
+  if (n === null || n === undefined || isNaN(n)) return '—';
+  return Number(n).toLocaleString('es-AR', {minimumFractionDigits:d, maximumFractionDigits:d});
+}
+
+function ageLabel(iso) {
+  if (!iso) return '—';
+  const sec = (Date.now() - new Date(iso + 'Z').getTime()) / 1000;
+  if (sec < 60) return Math.round(sec) + 's';
+  if (sec < 3600) return Math.round(sec/60) + 'm';
+  if (sec < 86400) return Math.round(sec/3600) + 'h';
+  return Math.round(sec/86400) + 'd';
+}
+
+async function fetchSnapshot() {
+  try {
+    const r = await fetch('/api/snapshot');
+    const d = await r.json();
+    renderMacro(d.macro);
+    renderWatchlist(d.snapshot);
+    document.getElementById('lastUpdate').textContent = new Date(d.server_time + 'Z').toLocaleTimeString('es-AR');
+  } catch (e) { console.error('snapshot', e); }
+}
+
+async function fetchAlerts() {
+  try {
+    const r = await fetch('/api/alerts?limit=15');
+    const d = await r.json();
+    renderAlerts(d.alerts || []);
+  } catch (e) { console.error('alerts', e); }
+}
+
+async function fetchHealth() {
+  try {
+    const r = await fetch('/api/health');
+    const d = await r.json();
+    const dot = document.getElementById('statusDot');
+    const text = document.getElementById('statusText');
+    dot.className = 'dot ' + (d.status || 'unknown');
+    text.textContent = (d.status || 'unknown').toUpperCase() + (d.broker_ok ? ' · IOL ok' : ' · sin IOL');
+    const s = d.db_stats || {};
+    document.getElementById('dbStats').textContent =
+      `${s.ticks_count||0} ticks · ${s.macro_count||0} macro · ${s.alerts_count||0} alertas`;
+    document.getElementById('errorCount').textContent = s.collector_errors_count || 0;
+    renderActions(d.recent_actions || []);
+  } catch (e) { console.error('health', e); }
+}
+
+function renderMacro(m) {
+  if (!m) return;
+  document.getElementById('mepAl30').textContent = fmt(m.mep_al30);
+  document.getElementById('mepGd30').textContent = fmt(m.mep_gd30);
+  document.getElementById('ccl').textContent = fmt(m.ccl_al30);
+  document.getElementById('c1d').textContent = m.caucion_1d ? fmt(m.caucion_1d) + '%' : '—';
+  document.getElementById('c7d').textContent = m.caucion_7d ? fmt(m.caucion_7d) + '%' : '—';
+}
+
+function renderWatchlist(rows) {
+  const tbody = document.getElementById('watchlist');
+  if (!rows || !rows.length) { tbody.innerHTML = '<tr><td colspan="8" class="dim">Sin datos aún</td></tr>'; return; }
+  tbody.innerHTML = rows.map(r => {
+    const spreadPct = (r.bid && r.ask && r.ask > 0) ? ((r.ask - r.bid) / r.ask * 100) : null;
+    return `<tr>
+      <td><b>${r.symbol}</b></td>
+      <td class="dim">${(r.source||'').replace('_',' ')}</td>
+      <td>${fmt(r.last)}</td>
+      <td class="dim">${fmt(r.bid)}</td>
+      <td class="dim">${fmt(r.ask)}</td>
+      <td class="dim">${spreadPct !== null ? fmt(spreadPct) + '%' : '—'}</td>
+      <td class="dim">${r.volume ? fmt(r.volume, 0) : '—'}</td>
+      <td class="dim">${ageLabel(r.ts)}</td>
+    </tr>`;
+  }).join('');
+}
+
+function renderAlerts(items) {
+  const el = document.getElementById('alerts');
+  if (!items.length) { el.innerHTML = '<div class="dim">Sin alertas</div>'; return; }
+  el.innerHTML = items.map(a => `
+    <div class="alert-item">
+      <b>${a.symbol}</b> <span class="dim">[${a.kind}]</span> ${a.message}
+      <div class="dim" style="font-size:10px">${new Date(a.ts + 'Z').toLocaleString('es-AR')}</div>
+    </div>`).join('');
+}
+
+function renderActions(items) {
+  const el = document.getElementById('actions');
+  if (!items.length) { el.innerHTML = '<div class="dim">Sin actividad</div>'; return; }
+  el.innerHTML = items.slice().reverse().slice(0, 15).map(a => `
+    <div class="action-item ${a.message.includes('ERROR')||a.message.includes('CRITICAL') ? 'err' : ''}">
+      <span class="dim">${new Date(a.ts + 'Z').toLocaleTimeString('es-AR')}</span> ${a.message}
+    </div>`).join('');
+}
+
+function tick() {
+  fetchSnapshot();
+  fetchAlerts();
+  fetchHealth();
+}
+tick();
+setInterval(tick, 30000);
+</script>
 </body>
 </html>
