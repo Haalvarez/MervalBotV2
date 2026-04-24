@@ -21,12 +21,13 @@ class CIT2ArbStrategy(Strategy):
     def should_execute(self, signal: Signal, balance: dict, open_trades: list) -> tuple:
         return False, "Not implemented"
 
-    def report(self) -> dict:
-        from trades import get_stats
-        stats = get_stats(self.id)
+    def report(self):
         return {
             "id": self.id,
             "name": self.name,
-            "mode": self.mode,
-            **stats
+            "mode": "disabled",
+            "n_trades": 0,
+            "win_rate": 0,
+            "pnl_ars": 0,
+            "note": "Pendiente validar endpoint IOL ?plazo=t0",
         }

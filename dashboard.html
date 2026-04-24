@@ -68,6 +68,10 @@
         <h2>Acciones y Decisiones Recientes</h2>
         <ul id="recent_actions"></ul>
     </section>
+    <section class="activity" id="activity">
+      <h2>Activity Log</h2>
+      <div id="activity-list"></div>
+    </section>
     <script>
     async function fetchState() {
         const res = await fetch('/api/state');
@@ -80,7 +84,7 @@
     function render() {
         fetchState().then(state => {
             document.getElementById('balance').textContent = `ARS: ${state.balance.ars} USD: ${state.balance.usd}`;
-            document.getElementById('last_update').textContent = state.last_update;
+            document.getElementById('last_update').textContent = state.server_time;
             document.getElementById('status').textContent = state.status;
             let mode = (state.strategies[0]?.mode || 'PAPER').toUpperCase();
             document.getElementById('mode').textContent = `Modo: ${mode}`;
@@ -89,9 +93,12 @@
             state.strategies.forEach(s => {
                 let card = document.createElement('div');
                 card.className = 'card';
-                card.innerHTML = `<h2>${s.name} [${s.mode.toUpperCase()}]</h2>
+                if (s.mode === 'disabled') card.style.opacity = 0.4;
+                let badge = s.mode === 'disabled' ? '<span style="background:#b44;color:#fff;padding:2px 6px;border-radius:4px;font-size:0.7em;margin-left:8px;">DISABLED</span>' : '';
+                card.innerHTML = `<h2>${s.name} [${s.mode.toUpperCase()}]${badge}</h2>
                     <div>Win rate: ${(s.win_rate*100).toFixed(1)}% | PnL: ${s.pnl_ars.toFixed(2)} ARS | Trades: ${s.n_trades}</div>
                     <div>Posiciones abiertas: ${s.open_trades}</div>
+                    ${s.note ? `<div style='color:#b44;font-size:0.9em;'>${s.note}</div>` : ''}
                     <table><thead><tr><th>Última señal</th><th>Acción</th><th>Precio</th><th>SL</th><th>TP</th><th>Confianza</th></tr></thead>
                     <tbody>${s.last_signal ? `<tr><td>${s.last_signal.symbol}</td><td>${s.last_signal.action}</td><td>${s.last_signal.entry_price}</td><td>${s.last_signal.sl_price}</td><td>${s.last_signal.tp_price}</td><td>${(s.last_signal.confidence*100).toFixed(1)}%</td></tr>` : '<tr><td colspan="6">-</td></tr>'}</tbody></table>`;
                 main.appendChild(card);
@@ -99,7 +106,12 @@
             // Acciones y decisiones recientes
             let actions = state.recent_actions || [];
             let ul = document.getElementById('recent_actions');
-            ul.innerHTML = actions.length ? actions.map(a => `<li>${a}</li>`).join('') : '<li>-</li>';
+            if (ul) ul.innerHTML = actions.length ? actions.map(a => `<li>${a.message}</li>`).join('') : '<li>-</li>';
+            // Activity log
+            const list = document.getElementById('activity-list');
+            list.innerHTML = (state.recent_actions || []).slice().reverse().map(a =>
+                `<div class="activity-item"><span class="activity-ts">${a.ts.slice(11,19)}</span>${a.message}</div>`
+            ).join('');
         });
         fetchOpenTrades().then(trades => {
             let tbody = document.querySelector('#open_trades_table tbody');
@@ -114,5 +126,14 @@
     render();
     setInterval(render, 30000);
     </script>
+    <style>
+    .activity { margin-top: 2rem; padding: 1rem; background: #0f1320;
+      border-radius: 8px; max-height: 400px; overflow-y: auto; }
+    .activity h2 { font-size: 0.9rem; color: #8892a6; margin: 0 0 0.5rem; }
+    #activity-list { font-family: monospace; font-size: 0.75rem;
+      color: #c5cde0; }
+    .activity-item { padding: 2px 0; border-bottom: 1px solid #1a2033; }
+    .activity-ts { color: #5a6378; margin-right: 8px; }
+    </style>
 </body>
 </html>

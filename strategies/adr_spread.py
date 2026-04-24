@@ -1,5 +1,67 @@
 from strategy import Strategy, Signal
-from typing import List
+from typing import List, Optional
+from dataclasses import dataclass
+
+COMMISSION_RT = 0.012
+SLIPPAGE_BUFFER = 0.005
+MIN_EDGE = 0.008
+MIN_SPREAD_ENTRY = COMMISSION_RT + SLIPPAGE_BUFFER + MIN_EDGE
+SL_PCT = 0.015
+
+
+@dataclass
+class ADRSignalResult:
+    should_signal: bool
+    spread: float
+    precio_justo: float
+    entry_price: float
+    sl_price: float
+    tp_price: float
+    net_target: float
+    reason: str
+
+
+def calc_adr_signal(
+    adr_usd: float,
+    mep: float,
+    byma_last: float,
+    ratio: int,
+    commission_rt: float = COMMISSION_RT,
+    slippage_buffer: float = SLIPPAGE_BUFFER,
+    min_edge: float = MIN_EDGE,
+    sl_pct: float = SL_PCT,
+) -> Optional[ADRSignalResult]:
+    if adr_usd <= 0 or mep <= 0 or byma_last <= 0 or ratio <= 0:
+        return None
+    precio_justo = adr_usd * mep / ratio
+    spread = (precio_justo - byma_last) / byma_last
+    min_spread_entry = commission_rt + slippage_buffer + min_edge
+    entry_price = byma_last
+    sl_price = entry_price * (1 - sl_pct)
+    net_target = max(spread - commission_rt, 0.01)
+    tp_price = entry_price * (1 + net_target)
+    if spread > min_spread_entry:
+        return ADRSignalResult(
+            should_signal=True,
+            spread=spread,
+            precio_justo=precio_justo,
+            entry_price=entry_price,
+            sl_price=sl_price,
+            tp_price=tp_price,
+            net_target=net_target,
+            reason=f"ADR spread {spread*100:.2f}% > umbral {min_spread_entry*100:.2f}%",
+        )
+    return ADRSignalResult(
+        should_signal=False,
+        spread=spread,
+        precio_justo=precio_justo,
+        entry_price=entry_price,
+        sl_price=sl_price,
+        tp_price=tp_price,
+        net_target=net_target,
+        reason=f"spread {spread*100:+.2f}% bajo umbral",
+    )
+
 
 # Estrategia A: ADR Spread (pre-open signal)
 # Señal: precio_justo - precio_byma_actual / precio_byma_actual
@@ -23,50 +85,53 @@ class ADRSpreadStrategy(Strategy):
 
     def signals(self, broker) -> List[Signal]:
         import yfinance as yf
+        from activity_log import log_action
         ADR_TICKERS = {"GGAL": "GGAL", "YPFD": "YPF", "PAMP": "PAM", "BMA": "BMA"}
         signals = []
         for t in TICKERS:
             symbol = t["byma"]
             ratio = t["ratio"]
             if broker is None:
-                precio_adr_usd = 20.0
-                mep_rate = 1200.0
-                precio_byma_actual = 22000.0
+                adr_usd = 20.0
+                mep = 1200.0
+                byma_last = 22000.0
             else:
                 ticker_nyse = ADR_TICKERS.get(symbol)
                 data = yf.download(ticker_nyse, period="1d", interval="5m", progress=False)
-                precio_adr_usd = float(data["Close"].iloc[-1]) if not data.empty else None
-                mep_rate = broker.get_mep_rate("GD30")
-                precio_byma_actual = broker.get_quote(symbol).last
-            if not precio_adr_usd or not precio_byma_actual:
+                closes = data["Close"].dropna().tail(3)
+                if len(closes) < 2:
+                    log_action(f"[adr_spread] {symbol}: ADR sin datos suficientes, skip")
+                    continue
+                adr_usd = float(closes.mean())
+                mep = broker.get_mep_rate("GD30")
+                quote = broker.get_quote(symbol)
+                byma_last = quote.last if quote and quote.last else None
+                if byma_last is None or byma_last <= 0:
+                    log_action(f"[adr_spread] {symbol}: sin precio BYMA válido, skip")
+                    continue
+            result = calc_adr_signal(adr_usd, mep, byma_last, ratio)
+            if result is None:
+                log_action(f"[adr_spread] {symbol}: datos inválidos, skip")
                 continue
-            precio_justo = precio_adr_usd * mep_rate / ratio
-            spread = (precio_justo - precio_byma_actual) / precio_byma_actual
-            if spread > 0.015:
-                entry_price = precio_byma_actual
-                sl_price = entry_price * (1 - 0.015)
-                tp_price = entry_price + (precio_justo - entry_price) * 0.5
+            log_action(
+                f"[adr_spread] {symbol}: ADR=${adr_usd:.2f} "
+                f"MEP=${mep:.2f} ratio={ratio} "
+                f"justo=${result.precio_justo:.2f} actual=${byma_last:.2f} "
+                f"spread={result.spread*100:+.2f}% "
+                f"umbral={MIN_SPREAD_ENTRY:.2%} "
+                f"{'→ SEÑAL BUY' if result.should_signal else '→ sin señal'} "
+                f"{result.reason}"
+            )
+            if result.should_signal:
                 signals.append(Signal(
                     strategy_id=self.id,
                     symbol=symbol,
                     action="BUY",
-                    entry_price=entry_price,
-                    sl_price=sl_price,
-                    tp_price=tp_price,
-                    reason=f"ADR spread {spread:.2%}",
-                    confidence=min(1.0, abs(spread) / 0.03),
-                    plazo="t2"
-                ))
-            else:
-                signals.append(Signal(
-                    strategy_id=self.id,
-                    symbol=symbol,
-                    action="HOLD",
-                    entry_price=precio_byma_actual,
-                    sl_price=0,
-                    tp_price=0,
-                    reason=f"ADR spread {spread:.2%} < threshold",
-                    confidence=0.0,
+                    entry_price=result.entry_price,
+                    sl_price=result.sl_price,
+                    tp_price=result.tp_price,
+                    reason=result.reason,
+                    confidence=1.0,
                     plazo="t2"
                 ))
         return signals

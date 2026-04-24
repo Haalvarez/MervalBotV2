@@ -90,3 +90,13 @@ def send_daily_summary():
     lines.append(f"Posiciones abiertas ahora: {open_now}")
     lines.append(f"Acumulado histórico: {total_trades} trades | PnL ${total_pnl:,.0f}")
     _send("\n".join(lines))
+
+
+def send_startup():
+    from datetime import datetime
+    text = (
+        f"🤖 <b>mervalBotV2 iniciado</b> [{_mode_tag()}]\n"
+        f"Estrategias activas: {', '.join(STRATEGY_IDS)}\n"
+        f"Hora: {datetime.now().strftime('%Y-%m-%d %H:%M')} ART"
+    )
+    _send(text)

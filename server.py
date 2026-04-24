@@ -9,12 +9,12 @@ from strategies.adr_spread import ADRSpreadStrategy
 from strategies.ci_t2_arb import CIT2ArbStrategy
 from trades import get_open_trades, get_stats
 from datetime import datetime
+from activity_log import log_action, RECENT_ACTIONS
 from main import main_loop
-
 try:
-    from broker import IOLBroker
+    from main import BROKER
 except ImportError:
-    IOLBroker = None
+    BROKER = None
 
 try:
     from telegram import send_signal
@@ -28,18 +28,9 @@ STRATEGIES = [
 ]
 
 PORT = int(os.getenv("PORT", 8765))
-MAX_ACTIONS = 20
+MAX_ACTIONS = 200
 ALERT_COOLDOWN_SECONDS = int(os.getenv("ALERT_COOLDOWN_SECONDS", "300"))
-RECENT_ACTIONS = []
 _LAST_ALERT_TS = {}
-
-def log_action(message):
-    RECENT_ACTIONS.append({
-        "ts": datetime.utcnow().isoformat(),
-        "message": str(message),
-    })
-    if len(RECENT_ACTIONS) > MAX_ACTIONS:
-        RECENT_ACTIONS.pop(0)
 
 def send_critical_alert(reason):
     now = time.time()
@@ -63,16 +54,13 @@ def send_critical_alert(reason):
         log_action(f"Error enviando alerta Telegram: {exc}")
 
 def get_real_balance():
-    if IOLBroker is None:
+    if BROKER is None:
         send_critical_alert("Broker no disponible para consultar saldo")
         return {"ars": 0, "usd": 0}
     try:
-        broker = IOLBroker()
-        raw_balance = broker.get_balance() or {}
+        raw_balance = BROKER.get_balance() or {}
         ars = float(raw_balance.get("ars", 0) or 0)
         usd = float(raw_balance.get("usd", 0) or 0)
-        if ars == 0 and usd == 0:
-            send_critical_alert("Saldo en cero detectado")
         return {"ars": ars, "usd": usd}
     except Exception as exc:
         send_critical_alert(f"Error crítico consultando saldo: {exc}")
@@ -103,7 +91,8 @@ class Handler(BaseHTTPRequestHandler):
             state = {
                 "strategies": [],
                 "balance": balance,
-                "last_update": datetime.utcnow().isoformat(),
+                "server_time": datetime.utcnow().isoformat(),
+                "last_action_ts": RECENT_ACTIONS[-1]["ts"] if RECENT_ACTIONS else None,
                 "status": get_activity_status(balance),
                 "recent_actions": RECENT_ACTIONS[-MAX_ACTIONS:],
             }
